@@ -6,7 +6,7 @@ use std::{
 };
 
 use op::{Op, OpSequence};
-use parser::{Parser, Wrapped, any};
+use parser::{Parser, ParserIter, Wrapped, any};
 
 mod parser;
 
@@ -224,23 +224,21 @@ fn parse_set_zero_adds(input: &[Op]) -> Option<(Op, &[Op])> {
         .parse(input)
 }
 
-fn optimize<P, S: OpSequence>(prog: &[Op], parser: P, opt_flag: &mut bool) -> Vec<Op>
+fn optimize<P, E: OpSequence>(prog: &[Op], optimizer: P, opt_flag: &mut bool) -> Vec<Op>
 where
-    P: Parser<Op, S> + 'static,
-    S: Debug,
+    P: Parser<Op, E> + 'static,
+    E: Debug,
 {
     let mut opt = vec![];
-    let mut input = prog;
-    while input.len() > 0 {
-        let ((optimized, es), rest) = parser
-            // .inspect(|e| println!("Produced {e:?}"))
-            .map(OpSequence::vec)
-            .map(|e| (true, e))
-            .or(any.map(OpSequence::vec).map(|e| (false, e)))
-            .parse(input)
-            .unwrap();
+
+    let parser = optimizer
+        // .inspect(|e| println!("Produced {e:?}"))
+        .map(OpSequence::vec)
+        .map(|e| (true, e))
+        .or(any.map(OpSequence::vec).map(|e| (false, e)));
+
+    for (optimized, es) in parser.iter(prog) {
         *opt_flag |= optimized;
-        input = rest;
         opt.extend(es);
     }
 

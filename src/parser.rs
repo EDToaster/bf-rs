@@ -1,4 +1,4 @@
-use std::ops::RangeBounds;
+use std::{marker::PhantomData, ops::RangeBounds};
 
 // type alias...
 pub trait ClosureParser<T, E>: Fn(&[T]) -> Option<(E, &[T])> + Copy {}
@@ -84,6 +84,10 @@ pub trait Parser<T, E>: Sized + Copy {
             }
         }
     }
+
+    fn iter(self, input: &[T]) -> ParserIter<Self, T, E> {
+        ParserIter::new(self, input)
+    }
 }
 
 impl<T, E, P: ClosureParser<T, E>> Parser<T, E> for P {
@@ -155,4 +159,32 @@ macro_rules! token {
             _ => None,
         })
     };
+}
+
+pub struct ParserIter<'a, P, T, E> {
+    parser: P,
+    input: &'a [T],
+    _phantom: PhantomData<E>,
+}
+
+impl<'a, P, T, E> ParserIter<'a, P, T, E> {
+    pub fn new(parser: P, input: &'a [T]) -> Self {
+        Self {
+            parser,
+            input,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<'a, P, T, E> Iterator for ParserIter<'a, P, T, E>
+where
+    P: Parser<T, E>,
+{
+    type Item = E;
+    fn next(&mut self) -> Option<Self::Item> {
+        let (e, rest) = self.parser.parse(&self.input)?;
+        self.input = rest;
+        Some(e)
+    }
 }
