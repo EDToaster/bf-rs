@@ -21,7 +21,7 @@ pub trait Parser<T, E>: Sized + Copy {
         move |input| self.parse(input).map(|(e, t)| (mapping(e), t))
     }
 
-    fn inspect<F>(self, inspection: F) -> impl ClosureParser<T, E>
+    fn inspect<F>(self, inspection: F) -> impl Parser<T, E>
     where
         F: Fn(&E) -> () + Copy,
     {
@@ -36,18 +36,13 @@ pub trait Parser<T, E>: Sized + Copy {
         F: Fn(E) -> Option<E1> + Copy,
     {
         move |input| {
-            self.parse(input).and_then(|(e, rest)| {
-                if let Some(e) = mapping(e) {
-                    Some((e, rest))
-                } else {
-                    None
-                }
-            })
+            self.parse(input)
+                .and_then(|(e, rest)| mapping(e).map(|e| (e, rest)))
         }
     }
 
-    fn emit<E1: Copy>(self, emit: E1) -> impl ClosureParser<T, E1> {
-        move |input| self.parse(input).map(|(_, t)| (emit, t))
+    fn emit<E1: Copy>(self, emit: E1) -> impl Parser<T, E1> {
+        self.map(move |_| emit)
     }
 
     fn repeat<R>(self, range: R) -> impl ClosureParser<T, Vec<E>>
@@ -72,11 +67,11 @@ pub trait Parser<T, E>: Sized + Copy {
         }
     }
 
-    fn plus(self) -> impl ClosureParser<T, Vec<E>> {
+    fn plus(self) -> impl Parser<T, Vec<E>> {
         self.repeat(1..)
     }
 
-    fn star(self) -> impl ClosureParser<T, Vec<E>> {
+    fn star(self) -> impl Parser<T, Vec<E>> {
         self.repeat(0..)
     }
 
