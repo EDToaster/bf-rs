@@ -1,6 +1,5 @@
 use std::{marker::PhantomData, ops::RangeBounds};
 
-use seq_macro::seq;
 // type alias...
 pub trait ClosureParser<T, E>: Fn(&[T]) -> Option<(E, &[T])> + Copy {}
 impl<B: Fn(&[T]) -> Option<(E, &[T])> + Copy, T, E> ClosureParser<T, E> for B {}
@@ -96,6 +95,13 @@ pub trait Parser<T, E>: Sized + Copy {
         }
     }
 
+    fn not(self) -> impl ClosureParser<T, ()> {
+        move |input| match self.parse(input) {
+            Some(_) => None,
+            None => Some(((), input)),
+        }
+    }
+
     fn iter(self, input: &[T]) -> ParserIter<Self, T, E> {
         ParserIter::new(self, input)
     }
@@ -125,36 +131,48 @@ where
     }
 }
 
-impl<T, E1, E2, A: Parser<T, E1>, B: Parser<T, E2>> Parser<T, (E1, E2)> for (A, B) {
-    fn parse<'a>(&self, input: &'a [T]) -> Option<((E1, E2), &'a [T])> {
-        self.0.and(self.1).parse(input)
+// Define parsers for tuples up to 50 values.
+eval_macro::eval! {
+    fn format_nested_params(i: usize) -> String {
+        (2..=i).fold("e1".to_string(), |acc, j| format!("({acc}, e{j})"))
+    }
+
+    for size in 1..=10 {
+        let emit_types = (1..=size)
+            .map(|i| format!("E{i}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let emit_value_types = (1..=size)
+            .map(|i| format!("e{i}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let parser_params = (1..=size)
+            .map(|i| format!("P{i}: Parser<T, E{i}>"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let parser_list = (1..=size)
+            .map(|i| format!("P{i}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let and_list = (1..size).map(|i| format!(".and(self.{i})")).collect::<String>();
+
+        let mapper_params = format_nested_params(size);
+
+
+        output! {
+            impl<T, {{emit_types}}, {{parser_params}}> Parser<T, ({{emit_types}},)> for ({{parser_list}},) {
+                fn parse<'a>(&self, input: &'a [T]) -> Option<(({{emit_types}},), &'a [T])> {
+                    self.0{{and_list}}
+                        .map(|{{mapper_params}}| ({{emit_value_types}},))
+                        .parse(input)
+                }
+            }
+        }
     }
 }
 
-impl<T, E1, E2, E3, A: Parser<T, E1>, B: Parser<T, E2>, C: Parser<T, E3>> Parser<T, (E1, E2, E3)>
-    for (A, B, C)
-{
-    fn parse<'a>(&self, input: &'a [T]) -> Option<((E1, E2, E3), &'a [T])> {
-        self.0
-            .and(self.1)
-            .and(self.2)
-            .map(|((e1, e2), e3)| (e1, e2, e3))
-            .parse(input)
-    }
-}
-
-impl<T, E1, E2, E3, E4, A: Parser<T, E1>, B: Parser<T, E2>, C: Parser<T, E3>, D: Parser<T, E4>>
-    Parser<T, (E1, E2, E3, E4)> for (A, B, C, D)
-{
-    fn parse<'a>(&self, input: &'a [T]) -> Option<((E1, E2, E3, E4), &'a [T])> {
-        self.0
-            .and(self.1)
-            .and(self.2)
-            .and(self.3)
-            .map(|(((e1, e2), e3), e4)| (e1, e2, e3, e4))
-            .parse(input)
-    }
-}
+// Simple parsers
 
 pub fn any<T>(input: &[T]) -> Option<(T, &[T])>
 where
@@ -179,6 +197,8 @@ macro_rules! token {
     };
 }
 
+// Combinators
+
 #[macro_export]
 macro_rules! or {
     ($parser:expr $(,)?) => {
@@ -188,6 +208,8 @@ macro_rules! or {
         $parser.or(or!($($rest),*))
     }
 }
+
+// Iterator impl
 
 pub struct ParserIter<'a, P, T, E> {
     parser: P,
