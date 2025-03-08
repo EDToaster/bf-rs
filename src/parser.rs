@@ -2,10 +2,15 @@ use std::{marker::PhantomData, ops::RangeBounds};
 
 // type alias...
 pub trait ClosureParser<T, E>: Fn(&[T]) -> Option<(E, &[T])> + Copy {}
-impl<B: Fn(&[T]) -> Option<(E, &[T])> + Copy, T, E> ClosureParser<T, E> for B {}
+impl<P: Fn(&[T]) -> Option<(E, &[T])> + Copy, T, E> ClosureParser<T, E> for P {}
+impl<P: ClosureParser<T, E>, T, E> Parser<T, E> for P {
+    fn parse(self, input: &[T]) -> Option<(E, &[T])> {
+        self(input)
+    }
+}
 
 pub trait Parser<T, E>: Sized + Copy {
-    fn parse<'a>(&self, input: &'a [T]) -> Option<(E, &'a [T])>;
+    fn parse(self, input: &[T]) -> Option<(E, &[T])>;
 
     fn or<P>(self, other: P) -> impl ClosureParser<T, E>
     where
@@ -51,10 +56,6 @@ pub trait Parser<T, E>: Sized + Copy {
         }
     }
 
-    fn emit<E1: Copy>(self, emit: E1) -> impl Parser<T, E1> {
-        self.map(move |_| emit)
-    }
-
     fn repeat<R>(self, range: R) -> impl ClosureParser<T, Vec<E>>
     where
         R: RangeBounds<usize> + 'static,
@@ -85,14 +86,11 @@ pub trait Parser<T, E>: Sized + Copy {
         self.repeat(0..)
     }
 
-    fn maybe(self) -> impl ClosureParser<T, Option<E>> {
-        move |input| {
-            if let Some((e, rest)) = self.parse(input) {
-                Some((Some(e), rest))
-            } else {
-                Some((None, input))
-            }
-        }
+    fn maybe(self) -> impl Parser<T, Option<E>>
+    where
+        E: Copy,
+    {
+        self.map(Some).or(emit(None))
     }
 
     fn not(self) -> impl ClosureParser<T, ()> {
@@ -107,12 +105,6 @@ pub trait Parser<T, E>: Sized + Copy {
     }
 }
 
-impl<T, E, P: ClosureParser<T, E>> Parser<T, E> for P {
-    fn parse<'a>(&self, input: &'a [T]) -> Option<(E, &'a [T])> {
-        self(input)
-    }
-}
-
 #[derive(Clone, Copy)]
 pub struct Wrapped<F>(pub F);
 
@@ -121,7 +113,7 @@ where
     T: Copy,
     F: Fn(T) -> Option<E> + Copy,
 {
-    fn parse<'a>(&self, input: &'a [T]) -> Option<(E, &'a [T])> {
+    fn parse(self, input: &[T]) -> Option<(E, &[T])> {
         if let Some((tok, rest)) = input.split_first() {
             if let Some(e) = self.0(*tok) {
                 return Some((e, rest));
@@ -162,7 +154,7 @@ eval_macro::eval! {
 
         output! {
             impl<T, {{emit_types}}, {{parser_params}}> Parser<T, ({{emit_types}},)> for ({{parser_list}},) {
-                fn parse<'a>(&self, input: &'a [T]) -> Option<(({{emit_types}},), &'a [T])> {
+                fn parse(self, input: &[T]) -> Option<(({{emit_types}},), &[T])> {
                     self.0{{and_list}}
                         .map(|{{mapper_params}}| ({{emit_value_types}},))
                         .parse(input)
@@ -179,6 +171,10 @@ where
     T: Copy,
 {
     input.split_first().map(|(t, rest)| (*t, rest))
+}
+
+fn emit<T, E: Copy>(emit: E) -> impl ClosureParser<T, E> {
+    move |input| Some((emit.clone(), input))
 }
 
 #[macro_export]

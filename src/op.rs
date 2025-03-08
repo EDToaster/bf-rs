@@ -54,7 +54,7 @@ impl Debug for Op {
             Op::Set(a) => write!(f, "={a}")?,
             Op::Copy(o, m) => write!(f, "({o}*{m})")?,
             Op::OffsetAdd(o, a) => write!(f, "({o}+={a})")?,
-            Op::OffsetSet(o, a) => write!(f, "_")?,
+            Op::OffsetSet(_o, _a) => write!(f, "_")?,
         }
         Ok(())
     }
