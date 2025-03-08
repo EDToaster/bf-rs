@@ -1,16 +1,18 @@
 use std::{
     fmt::Debug,
     fs,
-    io::{self, Write},
+    io::{self, Read, Write},
     path::PathBuf,
 };
 
+use mut_wrapping::MutatingWrappingAdd;
 use op::{Op, OpSequence};
-use parser::{Parser, ParserIter, Wrapped, any};
+use parser::{Parser, Wrapped, any};
 
+mod mut_wrapping;
+mod op;
 mod parser;
 
-mod op;
 #[derive(clap::Parser, Debug)]
 #[command(version, about)]
 struct Args {
@@ -20,11 +22,8 @@ struct Args {
 
 fn main() -> anyhow::Result<()> {
     let args = <Args as clap::Parser>::parse();
-
     let text = fs::read_to_string(args.file)?;
-
     let mut prog = parse_program(&text);
-
     let mut opt = true;
     macro_rules! opt {
         ($func:expr) => {
@@ -34,18 +33,15 @@ fn main() -> anyhow::Result<()> {
 
     while opt {
         opt = false;
-        opt!(parse_fused_add_move);
+        opt!(parse_fused_add_move());
         opt!(parse_offset_add);
-        opt!(parse_copies);
-        opt!(parse_set_zero_adds);
+        opt!(parse_copies());
+        opt!(parse_set_zero_adds());
     }
 
     resolve_jumps(&mut prog);
-
-    debug_program(&prog);
-
+    // debug_program(&prog);
     execute(&prog);
-
     Ok(())
 }
 
@@ -90,7 +86,7 @@ fn resolve_jumps(prog: &mut [Op]) {
 
 fn execute(prog: &[Op]) {
     // circular buffer
-    let mut m = [0u8; 1 << 16];
+    let mut m = [0u8; 1 << u16::BITS];
     let mut r = 0u16;
 
     let mut p = 0usize;
@@ -113,7 +109,11 @@ fn execute(prog: &[Op]) {
                 }
             }
             Op::EndLoop(o) => -(o as isize),
-            Op::In => todo!(),
+            Op::In => {
+                let val = std::io::stdin().bytes().next().unwrap_or(Ok(0)).unwrap();
+                m[r as usize] = val;
+                1
+            }
             Op::Out => {
                 print!("{}", m[r as usize] as char);
                 io::stdout().flush().expect("Failure on flush!");
@@ -143,15 +143,15 @@ fn execute(prog: &[Op]) {
 }
 
 /// Parse >>> into r+=3 and +++ into m[r]+=3
-fn parse_fused_add_move(input: &[Op]) -> Option<(Op, &[Op])> {
-    let add = token!(Op::Add(a), a)
-        .repeat(2..)
-        .map(|v| Op::Add(v.iter().sum()));
-    let mov = token!(Op::Move(a), a)
-        .repeat(2..)
-        .map(|v| Op::Move(v.iter().sum()));
-
-    add.or(mov).parse(input)
+fn parse_fused_add_move() -> impl Parser<Op, Op> {
+    or![
+        token!(Op::Add(a), a)
+            .repeat(2..)
+            .map(|v| Op::Add(v.iter().sum())),
+        token!(Op::Move(a), a)
+            .repeat(2..)
+            .map(|v| Op::Move(v.iter().sum())),
+    ]
 }
 
 /// Parse sequences like >>>++<<=0< into m[r+3] += 2 and m[r+1] = 0
@@ -178,50 +178,49 @@ fn parse_offset_add(input: &[Op]) -> Option<(Vec<Op>, &[Op])> {
         }
 
         // if offset isn't 0, then there needs to be an add here
-        let (op, new_input) = token!(Op::Add(a), Op::OffsetAdd(offset, a))
-            .or(token!(Op::Set(a), Op::OffsetSet(offset, a)))
-            .parse(input)?;
+        let (op, new_input) = or![
+            token!(Op::Add(a), Op::OffsetAdd(offset, a)),
+            token!(Op::Set(a), Op::OffsetSet(offset, a))
+        ]
+        .parse(input)?;
         input = new_input;
         ops.push(op);
     }
-
     Some((ops, input))
 }
 
 /// Parse optimization of [-], [->>>++<<<], and [>>>++<<<-]
-fn parse_copies(input: &[Op]) -> Option<(Vec<Op>, &[Op])> {
-    let body = (
-        token!(Op::Add(-1)),
-        token!(Op::OffsetAdd(o, a), (o, a)).star(),
-    )
-        .map(|(_, adds)| adds)
-        .or((
+fn parse_copies() -> impl Parser<Op, Vec<Op>> {
+    let body = or![
+        (
+            token!(Op::Add(-1)),
+            token!(Op::OffsetAdd(o, a), (o, a)).star(),
+        )
+            .map(|(_, adds)| adds),
+        (
             token!(Op::OffsetAdd(o, a), (o, a)).star(),
             token!(Op::Add(-1)),
         )
-            .map(|(adds, _)| adds))
-        .flat_map(|copies| {
-            let mut ops: Vec<Op> = vec![];
+            .map(|(adds, _)| adds),
+    ]
+    .flat_map(|copies| {
+        let mut ops: Vec<Op> = vec![];
 
-            for (offset, mult) in copies {
-                ops.push(Op::Copy(offset, mult));
-            }
+        for (offset, mult) in copies {
+            ops.push(Op::Copy(offset, mult));
+        }
 
-            ops.push(Op::Set(0));
+        ops.push(Op::Set(0));
 
-            Some(ops)
-        });
+        Some(ops)
+    });
 
-    (token!(Op::StartLoop(_)), body, token!(Op::EndLoop(_)))
-        .map(|(_, e, _)| e)
-        .parse(input)
+    (token!(Op::StartLoop(_)), body, token!(Op::EndLoop(_))).map(|(_, e, _)| e)
 }
 
 /// Parse [-]++++ as =4
-fn parse_set_zero_adds(input: &[Op]) -> Option<(Op, &[Op])> {
-    (token!(Op::Set(0)), token!(Op::Add(a), a))
-        .map(|(_, a)| Op::Set(a as u8))
-        .parse(input)
+fn parse_set_zero_adds() -> impl Parser<Op, Op> {
+    (token!(Op::Set(0)), token!(Op::Add(a), a)).map(|(_, a)| Op::Set(a as u8))
 }
 
 fn optimize<P, E: OpSequence>(prog: &[Op], optimizer: P, opt_flag: &mut bool) -> Vec<Op>
@@ -281,20 +280,4 @@ fn debug_program(prog: &[Op]) {
         }
     }
     println!("");
-}
-
-trait MutatingWrappingAdd {
-    fn mut_wrapping_add_signed(&mut self, other: isize);
-}
-
-impl MutatingWrappingAdd for u16 {
-    fn mut_wrapping_add_signed(&mut self, other: isize) {
-        *self = self.wrapping_add_signed(other as i16);
-    }
-}
-
-impl MutatingWrappingAdd for u8 {
-    fn mut_wrapping_add_signed(&mut self, other: isize) {
-        *self = self.wrapping_add_signed(other as i8);
-    }
 }

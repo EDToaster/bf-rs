@@ -1,5 +1,6 @@
 use std::{marker::PhantomData, ops::RangeBounds};
 
+use seq_macro::seq;
 // type alias...
 pub trait ClosureParser<T, E>: Fn(&[T]) -> Option<(E, &[T])> + Copy {}
 impl<B: Fn(&[T]) -> Option<(E, &[T])> + Copy, T, E> ClosureParser<T, E> for B {}
@@ -12,6 +13,16 @@ pub trait Parser<T, E>: Sized + Copy {
         P: Parser<T, E>,
     {
         move |input| self.parse(input).or_else(|| other.parse(input))
+    }
+
+    fn and<P, E1>(self, other: P) -> impl ClosureParser<T, (E, E1)>
+    where
+        P: Parser<T, E1>,
+    {
+        move |input| {
+            self.parse(input)
+                .and_then(|(e, rest)| other.parse(rest).map(|(e1, rest)| ((e, e1), rest)))
+        }
     }
 
     fn map<F, E1>(self, mapping: F) -> impl ClosureParser<T, E1>
@@ -116,13 +127,7 @@ where
 
 impl<T, E1, E2, A: Parser<T, E1>, B: Parser<T, E2>> Parser<T, (E1, E2)> for (A, B) {
     fn parse<'a>(&self, input: &'a [T]) -> Option<((E1, E2), &'a [T])> {
-        self.0.parse(input).and_then(|(e1, rest)| {
-            if let Some((e2, rest)) = self.1.parse(rest) {
-                Some(((e1, e2), rest))
-            } else {
-                None
-            }
-        })
+        self.0.and(self.1).parse(input)
     }
 }
 
@@ -130,11 +135,24 @@ impl<T, E1, E2, E3, A: Parser<T, E1>, B: Parser<T, E2>, C: Parser<T, E3>> Parser
     for (A, B, C)
 {
     fn parse<'a>(&self, input: &'a [T]) -> Option<((E1, E2, E3), &'a [T])> {
-        self.0.parse(input).and_then(|(e1, rest)| {
-            self.1
-                .parse(rest)
-                .and_then(|(e2, rest)| self.2.parse(rest).map(|(e3, rest)| ((e1, e2, e3), rest)))
-        })
+        self.0
+            .and(self.1)
+            .and(self.2)
+            .map(|((e1, e2), e3)| (e1, e2, e3))
+            .parse(input)
+    }
+}
+
+impl<T, E1, E2, E3, E4, A: Parser<T, E1>, B: Parser<T, E2>, C: Parser<T, E3>, D: Parser<T, E4>>
+    Parser<T, (E1, E2, E3, E4)> for (A, B, C, D)
+{
+    fn parse<'a>(&self, input: &'a [T]) -> Option<((E1, E2, E3, E4), &'a [T])> {
+        self.0
+            .and(self.1)
+            .and(self.2)
+            .and(self.3)
+            .map(|(((e1, e2), e3), e4)| (e1, e2, e3, e4))
+            .parse(input)
     }
 }
 
@@ -159,6 +177,16 @@ macro_rules! token {
             _ => None,
         })
     };
+}
+
+#[macro_export]
+macro_rules! or {
+    ($parser:expr $(,)?) => {
+        $parser
+    };
+    ($parser:expr, $($rest:expr),* $(,)?) => {
+        $parser.or(or!($($rest),*))
+    }
 }
 
 pub struct ParserIter<'a, P, T, E> {
